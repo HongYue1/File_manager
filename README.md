@@ -19,7 +19,9 @@ This is a Python application that provides a graphical user interface (GUI) for 
 
 - Python 3.x
 - PyQt5 library (`pip install PyQt5`)
+- Download qrcp from here : https://github.com/claudiodangelis/qrcp/releases/latest
 - `qrcp` command-line utility (place `qrcp.exe` in a folder named `bin` in the same directory as the script).
+
 
 ## Usage
 
