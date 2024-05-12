@@ -6,11 +6,13 @@ import ctypes, sys
 import hashlib
 import subprocess  # For running external commands
 import socket  # For checking internet connection
+from cryptography.fernet import Fernet
+from base64 import urlsafe_b64encode
+from threading import Thread
 
 from PyQt5.QtWidgets import (
     QApplication,
     QWidget,
-    QLabel,
     QLineEdit,
     QPushButton,
     QListWidget,
@@ -20,9 +22,12 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QCheckBox,
     QProgressDialog,
+    QInputDialog,
 )
-from PyQt5.QtGui import QIcon, QPalette, QColor
-from PyQt5.QtCore import Qt, QUrl, QThread, pyqtSignal
+from PyQt5.QtGui import QPalette, QColor
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+
+# Removed WebDAV imports (wsgidav.wsgidav_app, wsgidav.dir_browser, waitress)
 
 
 def run_as_admin():
@@ -47,7 +52,7 @@ def calculate_hash(file_path, algorithm="sha256"):
     """Calculate the hash of a file using the specified algorithm."""
     hash_obj = hashlib.new(algorithm)
     with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):  # Read file in chunks
+        for chunk in iter(lambda: f.read(4096), b""):
             hash_obj.update(chunk)
     return hash_obj.hexdigest()
 
@@ -55,7 +60,6 @@ def calculate_hash(file_path, algorithm="sha256"):
 def is_connected_to_wifi():
     """Checks if the computer is connected to a Wi-Fi network."""
     try:
-        # Try to resolve a known hostname (e.g., Cloudflare's DNS server)
         socket.gethostbyname("one.one.one.one")
         return True
     except socket.gaierror:
@@ -66,16 +70,22 @@ class WorkerThread(QThread):
     """Worker thread for performing file operations in the background."""
 
     progress_updated = pyqtSignal(int)  # Signal to update progress bar
-    task_finished = pyqtSignal(bool)  # Signal whether task was successful
+    task_finished = pyqtSignal(bool, str)  # Signal task success/failure and message
 
     def __init__(
-        self, operation, source_directory, destination=None, selected_items=None
+        self,
+        operation,
+        source_directory,
+        destination=None,
+        selected_items=None,
+        password=None,
     ):
         super().__init__()
-        self.operation = operation  # "compress" or "decompress"
+        self.operation = operation  # "compress", "decompress", "encrypt", "decrypt"
         self.source_directory = source_directory
         self.destination = destination
         self.selected_items = selected_items
+        self.password = password
         self.cancelled = False
 
     def run(self):
@@ -84,26 +94,30 @@ class WorkerThread(QThread):
             self.compress_files()
         elif self.operation == "decompress":
             self.decompress_files()
+        elif self.operation == "encrypt":
+            self.encrypt_files()
+        elif self.operation == "decrypt":
+            self.decrypt_files()
 
     def compress_files(self):
         """Compresses the selected files into a ZIP archive."""
         if self.cancelled:
-            self.task_finished.emit(False)
+            self.task_finished.emit(False, "Compression cancelled.")
             return
 
         if self.source_directory.endswith((".zip")):
             QMessageBox.warning(None, "Error", "Cannot compress an archive file.")
-            self.task_finished.emit(False)
+            self.task_finished.emit(False, "Operation failed.")
             return
 
         if self.destination is None:
             QMessageBox.warning(None, "Error", "No destination file selected.")
-            self.task_finished.emit(False)
+            self.task_finished.emit(False, "Operation failed.")
             return
 
         if os.path.exists(self.destination):
             if self.cancelled:
-                self.task_finished.emit(False)
+                self.task_finished.emit(False, "Compression cancelled.")
                 return
 
             result = QMessageBox.question(
@@ -114,14 +128,14 @@ class WorkerThread(QThread):
                 QMessageBox.No,
             )
             if result == QMessageBox.No:
-                self.task_finished.emit(False)
+                self.task_finished.emit(False, "Operation cancelled.")
                 return
 
         if self.destination.endswith(".zip"):
             with zipfile.ZipFile(self.destination, "w", zipfile.ZIP_DEFLATED) as zipf:
                 for item in self.selected_items:
                     if self.cancelled:
-                        self.task_finished.emit(False)
+                        self.task_finished.emit(False, "Compression cancelled.")
                         return
 
                     item_path = os.path.join(self.source_directory, item.text())
@@ -129,7 +143,9 @@ class WorkerThread(QThread):
                         for foldername, _, filenames in os.walk(item_path):
                             for filename in filenames:
                                 if self.cancelled:
-                                    self.task_finished.emit(False)
+                                    self.task_finished.emit(
+                                        False, "Compression cancelled."
+                                    )
                                     return
 
                                 file_path = os.path.join(foldername, filename)
@@ -144,24 +160,24 @@ class WorkerThread(QThread):
                         )
         else:
             QMessageBox.warning(None, "Error", "Invalid archive format.")
-            self.task_finished.emit(False)
+            self.task_finished.emit(False, "Operation failed.")
             return
 
         if self.cancelled:
-            self.task_finished.emit(False)
+            self.task_finished.emit(False, "Compression cancelled.")
             return
 
-        self.task_finished.emit(True)
+        self.task_finished.emit(True, "Files compressed successfully.")
 
     def decompress_files(self):
         """Decompresses the selected ZIP archive."""
         if self.cancelled:
-            self.task_finished.emit(False)
+            self.task_finished.emit(False, "Decompression cancelled.")
             return
 
         if not self.source_directory.endswith((".zip")):
             QMessageBox.warning(None, "Error", "Not a valid archive file.")
-            self.task_finished.emit(False)
+            self.task_finished.emit(False, "Operation failed.")
             return
 
         if self.destination is None:
@@ -169,7 +185,7 @@ class WorkerThread(QThread):
 
         if os.path.exists(self.destination):
             if self.cancelled:
-                self.task_finished.emit(False)
+                self.task_finished.emit(False, "Decompression cancelled.")
                 return
 
             result = QMessageBox.question(
@@ -180,7 +196,7 @@ class WorkerThread(QThread):
                 QMessageBox.No,
             )
             if result == QMessageBox.No:
-                self.task_finished.emit(False)
+                self.task_finished.emit(False, "Operation cancelled.")
                 return
 
         if self.source_directory.endswith(".zip"):
@@ -188,14 +204,112 @@ class WorkerThread(QThread):
                 zip_ref.extractall(self.destination)
         else:
             QMessageBox.warning(None, "Error", "Invalid archive format.")
-            self.task_finished.emit(False)
+            self.task_finished.emit(False, "Operation failed.")
             return
 
         if self.cancelled:
-            self.task_finished.emit(False)
+            self.task_finished.emit(False, "Decompression cancelled.")
             return
 
-        self.task_finished.emit(True)
+        self.task_finished.emit(True, "Files decompressed successfully.")
+
+    def encrypt_files(self):
+        """Encrypts the selected files using Fernet."""
+        if self.cancelled:
+            self.task_finished.emit(False, "Encryption cancelled.")
+            return
+
+        if not self.password:
+            self.task_finished.emit(False, "Password is required for encryption.")
+            return
+
+        # Derive a key from the password using PBKDF2HMAC
+        salt = os.urandom(16)  # Generate a random salt
+        kdf = hashlib.pbkdf2_hmac(
+            "sha256",  # Use SHA256 for the hash
+            self.password.encode(),  # Convert the password to bytes
+            salt,
+            100000,  # It is recommended to use at least 100,000 iterations of SHA256
+            dklen=32,  # Get a 32 byte key
+        )
+        key = urlsafe_b64encode(
+            kdf
+        )  # Fernet key must be 32 url-safe base64-encoded bytes
+        f = Fernet(key)
+
+        for item in self.selected_items:
+            if self.cancelled:
+                self.task_finished.emit(False, "Encryption cancelled.")
+                return
+
+            file_path = os.path.join(self.source_directory, item.text())
+
+            if os.path.isfile(file_path):
+                try:
+                    with open(file_path, "rb") as file:
+                        original_data = file.read()
+
+                    encrypted_data = f.encrypt(original_data)
+
+                    # Write the salt to the beginning of the file
+                    with open(file_path, "wb") as file:
+                        file.write(salt + encrypted_data)
+
+                except Exception as e:
+                    self.task_finished.emit(
+                        False, f"Error encrypting {item.text()}: {e}"
+                    )
+                    return
+
+        self.task_finished.emit(True, "Files encrypted successfully.")
+
+    def decrypt_files(self):
+        """Decrypts the selected files using Fernet."""
+        if self.cancelled:
+            self.task_finished.emit(False, "Decryption cancelled.")
+            return
+
+        if not self.password:
+            self.task_finished.emit(False, "Password is required for decryption.")
+            return
+
+        for item in self.selected_items:
+            if self.cancelled:
+                self.task_finished.emit(False, "Decryption cancelled.")
+                return
+
+            file_path = os.path.join(self.source_directory, item.text())
+
+            if os.path.isfile(file_path):
+                try:
+                    with open(file_path, "rb") as file:
+                        # Read the salt from the beginning of the file
+                        salt = file.read(16)
+                        encrypted_data = file.read()
+
+                    # Derive the key from the password and salt
+                    kdf = hashlib.pbkdf2_hmac(
+                        "sha256",
+                        self.password.encode(),
+                        salt,
+                        100000,
+                        dklen=32,
+                    )
+                    key = urlsafe_b64encode(kdf)
+                    f = Fernet(key)
+
+                    decrypted_data = f.decrypt(encrypted_data)
+
+                    with open(file_path, "wb") as file:
+                        file.write(decrypted_data)
+
+                except Exception as e:
+                    self.task_finished.emit(
+                        False, f"Error decrypting {item.text()}: {e}"
+                    )
+                    return
+
+        self.task_finished.emit(True, "Files decrypted successfully.")
 
 
 class FileManager(QWidget):
@@ -289,6 +403,16 @@ class FileManager(QWidget):
         self.share_button.clicked.connect(self.share_file)
         bottom_layout.addWidget(self.share_button)
 
+        # Encrypt Button
+        self.encrypt_button = QPushButton("Encrypt")
+        self.encrypt_button.clicked.connect(self.encrypt_files)
+        bottom_layout.addWidget(self.encrypt_button)
+
+        # Decrypt Button
+        self.decrypt_button = QPushButton("Decrypt")
+        self.decrypt_button.clicked.connect(self.decrypt_files)
+        bottom_layout.addWidget(self.decrypt_button)
+
         # Add layouts
         main_layout.addLayout(top_layout)
         main_layout.addLayout(search_layout)
@@ -368,7 +492,9 @@ class FileManager(QWidget):
                     self.directory_input.setText(file_path)
                     self.update_file_list(file_path)
                 elif os.path.isfile(file_path):
-                    QUrl.fromLocalFile(file_path).toString()
+                    os.startfile(
+                        file_path
+                    )  # Open the file using the default application
                 else:
                     QMessageBox.warning(self, "Error", f"Path not found: {file_path}")
 
@@ -577,25 +703,25 @@ class FileManager(QWidget):
                 self.decompress_thread.start()
                 self.progress_dialog.exec_()
 
-    def compression_finished(self, successful):
+    def compression_finished(self, successful, message):
         """Handles the completion of the compression thread."""
         self.progress_dialog.setValue(100)
         self.progress_dialog.close()
         if successful:
-            QMessageBox.information(
-                self, "Compression Complete", "Files compressed successfully."
-            )
+            QMessageBox.information(self, "Compression Complete", message)
             self.update_file_list(self.directory_input.text())
+        else:
+            QMessageBox.warning(self, "Compression Error", message)
 
-    def decompression_finished(self, successful):
+    def decompression_finished(self, successful, message):
         """Handles the completion of the decompression thread."""
         self.progress_dialog.setValue(100)
         self.progress_dialog.close()
         if successful:
-            QMessageBox.information(
-                self, "Decompression Complete", "Files decompressed successfully."
-            )
+            QMessageBox.information(self, "Decompression Complete", message)
             self.update_file_list(self.directory_input.text())
+        else:
+            QMessageBox.warning(self, "Decompression Error", message)
 
     def cancel_compression(self):
         """Cancels the compression operation."""
@@ -625,7 +751,9 @@ class FileManager(QWidget):
             return
         elif len(selected_items) > 1:
             QMessageBox.warning(
-                self, "Multiple Files Selected", "Please select only one file to share."
+                self,
+                "Multiple Files Selected",
+                "Please select only one file to share.",
             )
             return
 
@@ -640,6 +768,104 @@ class FileManager(QWidget):
             QMessageBox.critical(
                 self, "Error", f"An error occurred while sharing the file: {e}"
             )
+
+    def encrypt_files(self):
+        """Encrypts the selected files."""
+        selected_items = self.file_list.selectedItems()
+        if not selected_items or (
+            len(selected_items) == 1 and selected_items[0].text() == "Go Up"
+        ):
+            QMessageBox.warning(
+                self, "Invalid Selection", "Please select file(s) to encrypt."
+            )
+            return
+
+        password, ok = QInputDialog.getText(
+            self,
+            "Enter Password",
+            "Enter password for encryption:",
+            QLineEdit.Password,
+        )
+        if ok and password:
+            source_directory = self.directory_input.text()
+            self.encrypt_thread = WorkerThread(
+                "encrypt",
+                source_directory,
+                selected_items=selected_items,
+                password=password,
+            )
+            self.encrypt_thread.task_finished.connect(self.encryption_finished)
+            self.progress_dialog = QProgressDialog(
+                "Encrypting...", "Cancel", 0, 100, self
+            )
+            self.progress_dialog.setWindowTitle("Encryption Progress")
+            self.progress_dialog.setWindowModality(Qt.WindowModal)
+            self.progress_dialog.canceled.connect(self.cancel_encryption)
+            self.encrypt_thread.start()
+            self.progress_dialog.exec_()
+
+    def decrypt_files(self):
+        """Decrypts the selected files."""
+        selected_items = self.file_list.selectedItems()
+        if not selected_items or (
+            len(selected_items) == 1 and selected_items[0].text() == "Go Up"
+        ):
+            QMessageBox.warning(
+                self, "Invalid Selection", "Please select file(s) to decrypt."
+            )
+            return
+
+        password, ok = QInputDialog.getText(
+            self,
+            "Enter Password",
+            "Enter password for decryption:",
+            QLineEdit.Password,
+        )
+        if ok and password:
+            source_directory = self.directory_input.text()
+            self.decrypt_thread = WorkerThread(
+                "decrypt",
+                source_directory,
+                selected_items=selected_items,
+                password=password,
+            )
+            self.decrypt_thread.task_finished.connect(self.decryption_finished)
+            self.progress_dialog = QProgressDialog(
+                "Decrypting...", "Cancel", 0, 100, self
+            )
+            self.progress_dialog.setWindowTitle("Decryption Progress")
+            self.progress_dialog.setWindowModality(Qt.WindowModal)
+            self.progress_dialog.canceled.connect(self.cancel_decryption)
+            self.decrypt_thread.start()
+            self.progress_dialog.exec_()
+
+    def encryption_finished(self, successful, message):
+        """Handles the completion of the encryption thread."""
+        self.progress_dialog.setValue(100)
+        self.progress_dialog.close()
+        if successful:
+            QMessageBox.information(self, "Encryption Complete", message)
+        else:
+            QMessageBox.warning(self, "Encryption Error", message)
+
+    def decryption_finished(self, successful, message):
+        """Handles the completion of the decryption thread."""
+        self.progress_dialog.setValue(100)
+        self.progress_dialog.close()
+        if successful:
+            QMessageBox.information(self, "Decryption Complete", message)
+        else:
+            QMessageBox.warning(self, "Decryption Error", message)
+
+    def cancel_encryption(self):
+        """Cancels the encryption operation."""
+        self.encrypt_thread.cancelled = True
+        self.progress_dialog.close()
+
+    def cancel_decryption(self):
+        """Cancels the decryption operation."""
+        self.decrypt_thread.cancelled = True
+        self.progress_dialog.close()
 
 
 if __name__ == "__main__":
