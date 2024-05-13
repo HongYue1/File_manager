@@ -27,8 +27,6 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPalette, QColor
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
-# Removed WebDAV imports (wsgidav.wsgidav_app, wsgidav.dir_browser, waitress)
-
 
 def run_as_admin():
     """Tries to relaunch the script with administrator privileges."""
@@ -318,7 +316,7 @@ class FileManager(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("File Manager")
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, 1024, 768)
         self.set_theme()
         self.init_ui()
         self.check_admin()
@@ -341,12 +339,29 @@ class FileManager(QWidget):
             "QPushButton { border: 1px solid #58657e; padding: 5px; }"
             "QPushButton:hover { background-color: #323437; }"
             "QListWidget { color: white; }"
-            "QMessageBox QLabel { color: #248; }"
-            "QMessageBox QPushButton { border: 1px solid #58657e; padding: 5px; color: #248; }"
-            "QMessageBox QPushButton:hover { background-color: #323437; }"
-            "QMessageBox QCheckBox { color: black; }"
+            "QMessageBox {background-color: #0f0f0f;color: #ffffff; }"
+            "QMessageBox QLabel { color: #ffffff; background-color: #0f0f0f; }"
+            "QMessageBox QPushButton { border: 1px solid #58657e; padding: 5px; color: #ffffff; }"
+            "QMessageBox QPushButton:hover { background-color: #323437; color:#ffffff;}"
+            "QMessageBox QCheckBox { color: #ffffff; }"
             "QProgressBar { text-align: center; color: white; }"
             "QProgressBar::chunk { background-color: #0078D7; }"
+            """
+            QFileDialog {
+                background-color: rgb(30, 30, 30); /* Dark background */
+                color: rgb(255, 255, 255); /* Light text */
+            }
+            QFileDialog QLabel {
+                color: rgb(255, 255, 255); /* Light text for labels */
+            }
+            QFileDialog QPushButton {
+                background-color: rgb(50, 50, 50); /* Slightly lighter background for buttons */
+                color: rgb(255, 255, 255); /* Light text for buttons */
+            }
+            QFileDialog QPushButton:hover {
+                background-color: rgb(60, 60, 60); /* Darker background on hover */
+            }
+"""
         )
 
     def init_ui(self):
